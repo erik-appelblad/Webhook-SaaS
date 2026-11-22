@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package delivery.v1;
+
+option go_package = "erikappelblad.dev/saas/internal/gen/delivery/v1;deliveryv1";
+
+service DeliveryService {
+  rpc CreateEndpoint(CreateEndpointRequest) returns (Endpoint);
+  rpc DispatchEvent(DispatchEventRequest) returns (Delivery);
+  rpc ListEndpoints(ListEndpointsRequest) returns (ListEndpointsResponse);
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
+}
+
+message Endpoint {
+  string id = 1;
+  string name = 2;
+  string url = 3;
+  string created_at = 4;
+}
+
+message Delivery {
+  string id = 1;
+  string endpoint_id = 2;
+  string payload = 3;
+  string status = 4;
+  int32 attempts = 5;
+  string last_error = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message CreateEndpointRequest {
+  string name = 1;
+  string url = 2;
+}
+
+message DispatchEventRequest {
+  string endpoint_id = 1;
+  string payload = 2;
+}
+
+message ListEndpointsRequest {}
+
+message ListEndpointsResponse {
+  repeated Endpoint endpoints = 1;
+}
+
+message ListDeliveriesRequest {
+  string endpoint_id = 1;
+  int32 limit = 2;
+}
+
+message ListDeliveriesResponse {
+  repeated Delivery deliveries = 1;
+}
