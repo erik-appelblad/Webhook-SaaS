@@ -22,5 +22,15 @@ services:
       - "7233:7233"
       - "8080:8080"
 
+  sink:
+    profiles: ["sink"]
+    build:
+      context: .
+      dockerfile: Dockerfile.sink
+    environment:
+      SINK_ADDRESS: ":9099"
+    ports:
+      - "9099:9099"
+
 volumes:
   postgres-data:

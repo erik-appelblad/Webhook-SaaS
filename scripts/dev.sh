@@ -9,7 +9,8 @@ DATABASE_URL="${DATABASE_URL:-postgres://saas:saas@localhost:5433/saas?sslmode=d
 TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-localhost:7233}"
 DELIVERY_GRPC_ADDRESS="${DELIVERY_GRPC_ADDRESS:-localhost:9097}"
 GRAPHQL_ADDRESS="${GRAPHQL_ADDRESS:-localhost:8081}"
-export DATABASE_URL TEMPORAL_ADDRESS DELIVERY_GRPC_ADDRESS GRAPHQL_ADDRESS
+SINK_ADDRESS="${SINK_ADDRESS:-localhost:9099}"
+export DATABASE_URL TEMPORAL_ADDRESS DELIVERY_GRPC_ADDRESS GRAPHQL_ADDRESS SINK_ADDRESS
 
 FORCE_INSTALL=0
 DO_DOWN=0
@@ -286,10 +287,27 @@ if [[ "$FORCE_INSTALL" -eq 1 || ! -d "$ROOT_DIR/web/node_modules" ]]; then
   (cd "$ROOT_DIR/web" && npm ci)
 fi
 
+if [[ -z "${DEV_ALLOWED_WEBHOOK_HOSTS+x}" ]]; then
+  split_host_port "$SINK_ADDRESS"
+  DEV_ALLOWED_WEBHOOK_HOSTS="localhost:${PROBE_PORT},127.0.0.1:${PROBE_PORT}"
+  if [[ "$PROBE_HOST" != "127.0.0.1" && "$PROBE_HOST" != "localhost" ]]; then
+    DEV_ALLOWED_WEBHOOK_HOSTS="${DEV_ALLOWED_WEBHOOK_HOSTS},${PROBE_HOST}:${PROBE_PORT}"
+  fi
+fi
+export DEV_ALLOWED_WEBHOOK_HOSTS
+
 BIN_DIR="$(mktemp -d)"
 log "Building Go services..."
 go build -o "$BIN_DIR/delivery" ./cmd/delivery
 go build -o "$BIN_DIR/api" ./cmd/api
+go build -o "$BIN_DIR/sink" ./cmd/sink
+
+log "Starting chaos sink on $SINK_ADDRESS..."
+"$BIN_DIR/sink" > >(prefix_logs "sink") 2>&1 &
+sink_pid=$!
+SERVICE_PIDS+=("$sink_pid")
+SERVICE_NAMES+=("sink")
+wait_for_tcp "chaos sink" "$SINK_ADDRESS" 30 "$sink_pid"
 
 log "Starting delivery service on $DELIVERY_GRPC_ADDRESS..."
 "$BIN_DIR/delivery" > >(prefix_logs "delivery") 2>&1 &
@@ -315,6 +333,7 @@ log "All services started:"
 log "  Dashboard:     http://localhost:5173 (see Vite output above for actual URL)"
 log "  GraphQL API:   http://${GRAPHQL_ADDRESS}/query"
 log "  Delivery gRPC: ${DELIVERY_GRPC_ADDRESS}"
+log "  Chaos sink:    http://${SINK_ADDRESS} (POST /webhook)"
 log "  Temporal UI:   http://localhost:8080"
 log "Press Ctrl+C to stop the local services."
 
