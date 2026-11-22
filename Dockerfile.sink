@@ -1,0 +1,16 @@
+FROM golang:1.27 AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/sink ./cmd/sink
+COPY internal/sink ./internal/sink
+
+RUN CGO_ENABLED=0 go build -o /sink ./cmd/sink
+
+FROM gcr.io/distroless/static-debian12:nonroot
+EXPOSE 9099
+ENV SINK_ADDRESS=:9099
+COPY --from=builder /sink /sink
+ENTRYPOINT ["/sink"]

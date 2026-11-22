@@ -6,6 +6,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"erikappelblad.dev/saas/internal/delivery"
 	deliveryv1 "erikappelblad.dev/saas/internal/gen/delivery/v1"
@@ -16,6 +20,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/grpc"
 )
+
+const shutdownTimeout = 10 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -28,7 +34,17 @@ func run() error {
 	temporalAddress := envOr("TEMPORAL_ADDRESS", "localhost:7233")
 	grpcAddress := envOr("DELIVERY_GRPC_ADDRESS", "localhost:9097")
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	allowedHosts, err := delivery.ParseAllowedPrivateHosts(os.Getenv("DEV_ALLOWED_WEBHOOK_HOSTS"))
+	if err != nil {
+		return err
+	}
+	if len(allowedHosts) > 0 {
+		log.Printf("WARNING: DEV_ALLOWED_WEBHOOK_HOSTS enabled for %v; for local development only", allowedHosts)
+	}
+
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		return err
@@ -48,7 +64,8 @@ func run() error {
 	taskWorker.RegisterWorkflowWithOptions(delivery.DeliverWorkflow, workflow.RegisterOptions{
 		Name: delivery.DeliverWorkflowName,
 	})
-	activities := delivery.NewActivities(database)
+	httpClient := delivery.NewWebhookHTTPClient(allowedHosts)
+	activities := delivery.NewActivities(database, httpClient)
 	taskWorker.RegisterActivityWithOptions(activities.DeliverWebhookAttempt, activity.RegisterOptions{
 		Name: "DeliverWebhookAttempt",
 	})
@@ -62,29 +79,77 @@ func run() error {
 	}
 	grpcServer := grpc.NewServer()
 	deliveryv1.RegisterDeliveryServiceServer(grpcServer, delivery.NewServer(database, temporalClient))
+
 	serveErrors := make(chan error, 1)
 	go func() {
 		serveErrors <- grpcServer.Serve(listener)
 	}()
 
+	workerStop := make(chan interface{})
+	var stopWorkerOnce sync.Once
+	stopWorker := func() {
+		stopWorkerOnce.Do(func() {
+			close(workerStop)
+		})
+	}
+
 	workerErrors := make(chan error, 1)
 	go func() {
-		workerErrors <- taskWorker.Run(worker.InterruptCh())
+		workerErrors <- taskWorker.Run(workerStop)
 	}()
 
+	log.Printf("Delivery gRPC listening at %s (task queue: %s)", grpcAddress, delivery.TaskQueue)
+
 	select {
-	case err := <-serveErrors:
-		taskWorker.Stop()
-		if !errors.Is(err, net.ErrClosed) {
-			grpcServer.Stop()
-			<-workerErrors
-			return err
+	case <-ctx.Done():
+		log.Println("Shutting down delivery service...")
+		stopWorker()
+		gracefulStopGRPC(grpcServer, shutdownTimeout)
+		workerErr := <-workerErrors
+		serveErr := <-serveErrors
+		if workerErr != nil {
+			return workerErr
 		}
-	case err := <-workerErrors:
-		grpcServer.Stop()
-		return err
+		if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
+			return serveErr
+		}
+		return nil
+	case serveErr := <-serveErrors:
+		stopWorker()
+		workerErr := <-workerErrors
+		if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
+			return serveErr
+		}
+		return workerErr
+	case workerErr := <-workerErrors:
+		gracefulStopGRPC(grpcServer, shutdownTimeout)
+		serveErr := <-serveErrors
+		if workerErr != nil {
+			return workerErr
+		}
+		if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
+			return serveErr
+		}
+		return nil
 	}
-	return nil
+}
+
+func gracefulStopGRPC(server *grpc.Server, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+	case <-timer.C:
+		server.Stop()
+		<-done
+	}
 }
 
 func envOr(key, fallback string) string {

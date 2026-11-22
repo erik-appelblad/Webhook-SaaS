@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
 	"time"
@@ -10,9 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-//go:embed migrations/*.sql
-var migrations embed.FS
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -56,17 +52,6 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 
 func (s *Store) Close() {
 	s.pool.Close()
-}
-
-func (s *Store) Migrate(ctx context.Context) error {
-	migration, err := migrations.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		return fmt.Errorf("read database migration: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, string(migration)); err != nil {
-		return fmt.Errorf("apply database migration: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) CreateEndpoint(ctx context.Context, name, url string) (Endpoint, error) {

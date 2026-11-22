@@ -19,15 +19,26 @@ const (
 	failActivityName    = "MarkWebhookDeliveryFailed"
 )
 
+type DeliveryStore interface {
+	GetDeliveryTarget(ctx context.Context, id string) (store.DeliveryTarget, error)
+	MarkAttemptStarted(ctx context.Context, id string) error
+	MarkAttemptFailed(ctx context.Context, id, message string) error
+	MarkDelivered(ctx context.Context, id string) error
+	MarkDeliveryFailed(ctx context.Context, id, message string) error
+}
+
 type Activities struct {
-	store  *store.Store
+	store  DeliveryStore
 	client *http.Client
 }
 
-func NewActivities(database *store.Store) *Activities {
+func NewActivities(database DeliveryStore, httpClient *http.Client) *Activities {
+	if httpClient == nil {
+		httpClient = newWebhookHTTPClient()
+	}
 	return &Activities{
 		store:  database,
-		client: newWebhookHTTPClient(),
+		client: httpClient,
 	}
 }
 
